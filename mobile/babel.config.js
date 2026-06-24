@@ -1,0 +1,7 @@
+// Babel config for the Expo managed workflow.
+module.exports = function (api) {
+  api.cache(true);
+  return {
+    presets: ['babel-preset-expo'],
+  };
+};

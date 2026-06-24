@@ -1,0 +1,29 @@
+{
+  "expo": {
+    "name": "Marketplace",
+    "slug": "marketplace-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "marketplace",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": false,
+    "assetBundlePatterns": ["**/*"],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.example.marketplace"
+    },
+    "android": {
+      "package": "com.example.marketplace"
+    },
+    "plugins": [
+      "expo-image-picker",
+      [
+        "@stripe/stripe-react-native",
+        {
+          "merchantIdentifier": "merchant.com.example.marketplace",
+          "enableGooglePay": false
+        }
+      ]
+    ]
+  }
+}

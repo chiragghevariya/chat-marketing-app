@@ -19,6 +19,9 @@ class DatabaseSeeder extends Seeder
         $this->call([
             RoleSeeder::class,
             CategorySeeder::class,
+            // Phase 5: demo sellers/buyers, listings, completed orders & chat
+            // threads for the marketplace showcase.
+            DemoSeeder::class,
         ]);
 
         // --- Demo accounts (all use the password "password") -------------------
