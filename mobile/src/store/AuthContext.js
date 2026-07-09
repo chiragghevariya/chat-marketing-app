@@ -7,11 +7,12 @@
 // shared axios instance configured by setAuthToken() in ../config/api.
 // ---------------------------------------------------------------------------
 
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-import api, { setAuthToken } from '../config/api';
+import api, { setAuthToken, registerUnauthorizedHandler } from '../config/api';
 import { TOKEN_STORAGE_KEY } from '../config/env';
+import { registerForPushNotifications, unregisterPushNotifications } from '../services/notifications';
 
 // The context value shape is documented by the useAuth() consumer below.
 const AuthContext = createContext(null);
@@ -22,6 +23,28 @@ export function AuthProvider({ children }) {
   // Starts true so the app can show a splash/loading state until we know
   // whether a persisted session exists.
   const [loading, setLoading] = useState(true);
+
+  // Holds the latest logout() so the global 401 handler (registered once) always
+  // calls the current closure without re-registering on every render.
+  const logoutRef = useRef(null);
+
+  // Register a global handler so a 401 from ANY request clears the session and
+  // sends the user back to Login — this also covers spots that used to swallow
+  // errors (e.g. refreshUser().catch(() => {})).
+  useEffect(() => {
+    registerUnauthorizedHandler(() => {
+      if (logoutRef.current) logoutRef.current();
+    });
+    return () => registerUnauthorizedHandler(null);
+  }, []);
+
+  // Register for push notifications once the user is logged in. The reusable
+  // service requests notification permission and generates + logs the FCM token.
+  // It does NOT send the token anywhere or handle incoming messages yet.
+  useEffect(() => {
+    if (!user) return;
+    registerForPushNotifications();
+  }, [user?.id]);
 
   // ---- Session restore on mount -------------------------------------------
   useEffect(() => {
@@ -92,6 +115,9 @@ export function AuthProvider({ children }) {
 
   // Log out: best-effort server logout, then always clear the local session.
   async function logout() {
+    // Remove this device's push token FIRST, while the JWT is still valid
+    // (the DELETE endpoint is authenticated). Best-effort — never blocks logout.
+    await unregisterPushNotifications();
     try {
       await api.auth.logout();
     } catch (e) {
@@ -110,6 +136,9 @@ export function AuthProvider({ children }) {
     setUser(me);
     return me;
   }
+
+  // Keep the ref current so the 401 handler always invokes the latest logout.
+  logoutRef.current = logout;
 
   const value = {
     user,

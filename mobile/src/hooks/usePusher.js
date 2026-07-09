@@ -7,7 +7,15 @@
 // ---------------------------------------------------------------------------
 
 import { useEffect, useRef } from 'react';
-import Pusher from 'pusher-js';
+// pusher-js's React Native build exports the class as a NAMED export
+// (`module.exports.Pusher = ...`), while its web/node builds export it as the
+// default. A plain `import Pusher from 'pusher-js'` therefore yields an object
+// (not the class) on React Native, and `new Pusher()` throws "constructor is
+// not callable" under Hermes. Resolve the class defensively so it works on
+// every platform.
+import * as PusherModule from 'pusher-js';
+
+const Pusher = PusherModule.Pusher || PusherModule.default || PusherModule;
 
 import { PUSHER_KEY, PUSHER_CLUSTER, BROADCASTING_AUTH_URL } from '../config/env';
 import { useAuth } from '../store/AuthContext';

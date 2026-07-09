@@ -32,6 +32,34 @@ class StripeService
         ]);
     }
 
+    /**
+     * Run a Stripe SDK call with Stripe's advisory notices suppressed.
+     *
+     * Stripe's PHP SDK emits an E_USER_WARNING (via trigger_error) whenever an API
+     * response carries a "stripe-notice" header — e.g. "We recommend building your
+     * integration using Accounts v2." Laravel promotes PHP warnings to fatal
+     * ErrorExceptions in every environment (it reports E_ALL), so this harmless
+     * advisory would otherwise abort an ALREADY-SUCCESSFUL API call and surface as
+     * a 500. We swallow only E_USER_WARNING for the duration of the call; any other
+     * error still falls through to Laravel's handler, and real Stripe API failures
+     * still throw \Stripe\Exception\ApiErrorException as normal.
+     *
+     * @template T
+     *
+     * @param  callable(): T  $call
+     * @return T
+     */
+    private function withoutStripeNotices(callable $call)
+    {
+        set_error_handler(static fn (): bool => true, \E_USER_WARNING);
+
+        try {
+            return $call();
+        } finally {
+            restore_error_handler();
+        }
+    }
+
     /* ===================== Connect: seller onboarding ===================== */
 
     /**
@@ -41,7 +69,7 @@ class StripeService
      */
     public function createExpressAccount(User $seller): Account
     {
-        return $this->stripe->accounts->create([
+        return $this->withoutStripeNotices(fn () => $this->stripe->accounts->create([
             'type' => 'express',
             'email' => $seller->email,
             'capabilities' => [
@@ -50,7 +78,7 @@ class StripeService
             ],
             'business_type' => 'individual',
             'metadata' => ['user_id' => (string) $seller->id],
-        ]);
+        ]));
     }
 
     /**
@@ -60,19 +88,31 @@ class StripeService
      */
     public function createOnboardingLink(string $accountId, string $returnUrl, string $refreshUrl): string
     {
-        $link = $this->stripe->accountLinks->create([
+        $link = $this->withoutStripeNotices(fn () => $this->stripe->accountLinks->create([
             'account' => $accountId,
             'return_url' => $returnUrl,   // where Stripe sends the user when finished
             'refresh_url' => $refreshUrl, // where Stripe sends them if the link expires
             'type' => 'account_onboarding',
-        ]);
+        ]));
+
+        return $link->url;
+    }
+
+    /**
+     * Create a single-use Express Dashboard login link for the connected account.
+     *
+     * @return string The Stripe-hosted dashboard URL.
+     */
+    public function createLoginLink(string $accountId): string
+    {
+        $link = $this->withoutStripeNotices(fn () => $this->stripe->accounts->createLoginLink($accountId));
 
         return $link->url;
     }
 
     public function retrieveAccount(string $accountId): Account
     {
-        return $this->stripe->accounts->retrieve($accountId);
+        return $this->withoutStripeNotices(fn () => $this->stripe->accounts->retrieve($accountId));
     }
 
     /* ========================= Payments / orders ========================= */
@@ -91,7 +131,7 @@ class StripeService
      */
     public function createPaymentIntent(int $amountCents, int $feeCents, string $destinationAccountId, array $metadata = []): PaymentIntent
     {
-        return $this->stripe->paymentIntents->create([
+        return $this->withoutStripeNotices(fn () => $this->stripe->paymentIntents->create([
             'amount' => $amountCents,
             'currency' => config('services.stripe.currency', 'usd'),
             'application_fee_amount' => $feeCents,
@@ -102,12 +142,12 @@ class StripeService
             // which would break the manual-capture escrow this flow depends on.
             'automatic_payment_methods' => ['enabled' => true, 'allow_redirects' => 'never'],
             'metadata' => $metadata,
-        ]);
+        ]));
     }
 
     public function retrievePaymentIntent(string $paymentIntentId): PaymentIntent
     {
-        return $this->stripe->paymentIntents->retrieve($paymentIntentId);
+        return $this->withoutStripeNotices(fn () => $this->stripe->paymentIntents->retrieve($paymentIntentId));
     }
 
     /**
@@ -116,7 +156,7 @@ class StripeService
      */
     public function capturePaymentIntent(string $paymentIntentId): PaymentIntent
     {
-        return $this->stripe->paymentIntents->capture($paymentIntentId);
+        return $this->withoutStripeNotices(fn () => $this->stripe->paymentIntents->capture($paymentIntentId));
     }
 
     /* ============================== Webhooks ============================= */

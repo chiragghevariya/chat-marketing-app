@@ -7,6 +7,7 @@ use App\Http\Requests\Chat\StoreConversationRequest;
 use App\Http\Resources\ConversationResource;
 use App\Models\Conversation;
 use App\Models\Listing;
+use App\Models\Order;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 
@@ -37,9 +38,12 @@ class ConversationController extends Controller
             ], 422);
         }
 
-        // Only active (published) listings can be contacted about — not drafts or
-        // sold items. (GET /listings/{id} can return non-active listings by id.)
-        if ($listing->status !== 'active') {
+        // Active (published) listings can be contacted about by anyone. Once a
+        // listing is sold/inactive we still allow its ACTUAL buyer to reach the
+        // seller (e.g. to coordinate delivery on the order they placed), but not
+        // random users. (GET /listings/{id} can return non-active listings by id.)
+        if ($listing->status !== 'active'
+            && ! Order::where('listing_id', $listing->id)->where('buyer_id', $buyer->id)->exists()) {
             return response()->json([
                 'message' => 'This listing is not available for messaging.',
             ], 422);

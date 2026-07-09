@@ -10,14 +10,17 @@
 // NOTE: App.js owns the <NavigationContainer>, so we do NOT include it here.
 // ---------------------------------------------------------------------------
 
-import React from 'react';
-import { View, ActivityIndicator, StyleSheet } from 'react-native';
+import React, { useEffect } from 'react';
+import { View, ActivityIndicator, StyleSheet, Platform } from 'react-native';
 import { createStackNavigator } from '@react-navigation/stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { Ionicons } from '@expo/vector-icons';
 
 import { useAuth } from '../store/AuthContext';
-import { colors } from '../config/theme';
+import { useTheme } from '../store/ThemeContext';
+import { useChat } from '../store/ChatContext';
+import { usePushNotifications } from '../hooks/usePushNotifications';
+import { setPushAuthReady } from '../services/navigationRef';
 
 // Screens
 import LoginScreen from '../screens/auth/LoginScreen';
@@ -31,16 +34,6 @@ import ChatScreen from '../screens/ChatScreen';
 const Stack = createStackNavigator();
 const Tab = createBottomTabNavigator();
 
-// ---------------------------------------------------------------------------
-// Shared header styling — accent-tinted headers used by the logged-in stack
-// and the bottom tabs.
-// ---------------------------------------------------------------------------
-const headerStyle = {
-  headerTintColor: colors.accent,
-  headerStyle: { backgroundColor: colors.background },
-  headerTitleStyle: { color: colors.text },
-};
-
 // Map each tab to its Ionicons name.
 const TAB_ICONS = {
   Explore: 'compass',
@@ -53,23 +46,70 @@ const TAB_ICONS = {
 // Bottom tabs: Explore, Messages, Sell, Profile (exact names/order).
 // ---------------------------------------------------------------------------
 function Tabs() {
+  const { colors, isDark } = useTheme();
+  const { unreadCount } = useChat();
+  const { user } = useAuth();
+
+  const headerStyle = {
+    headerTintColor: colors.accent,
+    headerStyle: { 
+      backgroundColor: colors.surface,
+      borderBottomWidth: 1,
+      borderBottomColor: colors.border,
+      shadowOpacity: 0,
+      elevation: 0,
+    },
+    headerTitleStyle: { color: colors.text, fontWeight: '700' },
+  };
+
   return (
     <Tab.Navigator
+      sceneContainerStyle={{ backgroundColor: colors.background }}
       screenOptions={({ route }) => ({
         ...headerStyle,
         tabBarActiveTintColor: colors.accent,
         tabBarInactiveTintColor: colors.textMuted,
+        tabBarStyle: {
+          backgroundColor: colors.surface,
+          borderTopWidth: 1,
+          borderTopColor: colors.border,
+          borderTopLeftRadius: 24,
+          borderTopRightRadius: 24,
+          paddingTop: 8,
+          height: Platform.OS === 'ios' ? 90 : 66,
+          paddingBottom: Platform.OS === 'ios' ? 30 : 12,
+          shadowColor: '#000000',
+          shadowOffset: { width: 0, height: -4 },
+          shadowOpacity: isDark ? 0.2 : 0.05,
+          shadowRadius: 10,
+          elevation: 10,
+        },
         tabBarIcon: ({ color, size, focused }) => {
           // Use the outline variant when the tab is inactive.
           const base = TAB_ICONS[route.name] || 'ellipse';
           const name = focused ? base : `${base}-outline`;
-          return <Ionicons name={name} size={size} color={color} />;
+          return <Ionicons name={name} size={size + 2} color={color} />;
         },
+        tabBarLabelStyle: {
+          fontSize: 10,
+          fontWeight: '700',
+          marginTop: 2,
+        },
+        tabBarAllowFontScaling: false,
       })}
     >
       <Tab.Screen name="Explore" component={ExploreScreen} options={{ title: 'Explore' }} />
-      <Tab.Screen name="Messages" component={MessagesScreen} options={{ title: 'Messages' }} />
-      <Tab.Screen name="Sell" component={SellScreen} options={{ title: 'Sell' }} />
+      <Tab.Screen
+        name="Messages"
+        component={MessagesScreen}
+        options={{
+          title: 'Messages',
+          tabBarBadge: unreadCount > 0 ? (unreadCount > 99 ? '99+' : unreadCount) : undefined,
+        }}
+      />
+      {user && user.role !== 'buyer' && (
+        <Tab.Screen name="Sell" component={SellScreen} options={{ title: 'Sell' }} />
+      )}
       <Tab.Screen name="Profile" component={ProfileScreen} options={{ title: 'Profile' }} />
     </Tab.Navigator>
   );
@@ -80,11 +120,34 @@ function Tabs() {
 // ---------------------------------------------------------------------------
 export default function RootNavigator() {
   const { user, loading } = useAuth();
+  const { colors } = useTheme();
+
+  // Set up foreground display + notification tap handling once (hooks must run
+  // before the early returns below).
+  usePushNotifications();
+
+  // Keep the push router's auth-readiness in sync so a deferred notification tap
+  // (from a terminated/logged-out state) navigates to Chat only once logged in.
+  useEffect(() => {
+    setPushAuthReady(!!user);
+  }, [user]);
+
+  const headerStyle = {
+    headerTintColor: colors.accent,
+    headerStyle: { 
+      backgroundColor: colors.surface,
+      borderBottomWidth: 1,
+      borderBottomColor: colors.border,
+      shadowOpacity: 0,
+      elevation: 0,
+    },
+    headerTitleStyle: { color: colors.text, fontWeight: '700' },
+  };
 
   // Restoring the session / logging in.
   if (loading) {
     return (
-      <View style={styles.loader}>
+      <View style={[styles.loader, { backgroundColor: colors.background }]}>
         <ActivityIndicator size="large" color={colors.accent} />
       </View>
     );
@@ -127,6 +190,5 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: colors.background,
   },
 });

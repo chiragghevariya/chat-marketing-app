@@ -3,6 +3,7 @@
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\CategoryController;
 use App\Http\Controllers\Api\ConversationController;
+use App\Http\Controllers\Api\DeviceTokenController;
 use App\Http\Controllers\Api\ListingController;
 use App\Http\Controllers\Api\MessageController;
 use App\Http\Controllers\Api\OrderController;
@@ -85,6 +86,14 @@ Route::middleware('auth:api')->group(function () {
     Route::post('orders/{order}/confirm-payment', [OrderController::class, 'confirmPayment']);
     Route::post('orders/{order}/ship', [OrderController::class, 'ship']);
     Route::post('orders/{order}/complete', [OrderController::class, 'complete']);
+});
+
+/* --------------------- Push notifications: device tokens ----------------- */
+// Register/unregister a device's FCM token for the authenticated user. Storage
+// only — no notifications are sent from here.
+Route::middleware('auth:api')->group(function () {
+    Route::post('device-tokens', [DeviceTokenController::class, 'store']);
+    Route::delete('device-tokens', [DeviceTokenController::class, 'destroy']);
 });
 
 /* ----------------------------- Stripe webhook (Phase 3) ------------------ */

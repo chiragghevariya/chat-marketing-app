@@ -32,10 +32,10 @@ class DemoSeeder extends Seeder
 {
     public function run(): void
     {
-        // --- Sellers (role seller, verified, placeholder Stripe Connect ids) ----
-        $sarah = $this->makeSeller('Sarah Chen', 'seller1@demo.com', 'acct_demo_seller1');
-        $marcus = $this->makeSeller('Marcus Lee', 'seller2@demo.com', 'acct_demo_seller2');
-        $elena = $this->makeSeller('Elena Rossi', 'seller3@demo.com', 'acct_demo_seller3');
+        // --- Sellers (role seller; unconnected until real Stripe onboarding) ----
+        $sarah = $this->makeSeller('Sarah Chen', 'seller1@demo.com');
+        $marcus = $this->makeSeller('Marcus Lee', 'seller2@demo.com');
+        $elena = $this->makeSeller('Elena Rossi', 'seller3@demo.com');
 
         // --- Buyers (role buyer, verified) -------------------------------------
         $bob = $this->makeBuyer('Bob Buyer', 'buyer1@demo.com');
@@ -129,21 +129,29 @@ class DemoSeeder extends Seeder
     }
 
     /**
-     * Create/locate a verified seller and set the guarded fields safely.
+     * Create/locate a seller and set the guarded fields safely.
+     *
+     * NOTE: we intentionally do NOT seed a stripe_account_id or force is_verified.
+     * A real Stripe Connect (Express) account only exists after the seller completes
+     * Stripe's hosted onboarding. Seeding a placeholder id like "acct_demo_seller1"
+     * made sellers *look* connected but caused every live Stripe call against them
+     * (onboarding link creation, PaymentIntent with transfer_data.destination) to
+     * fail with "No such account". Leaving these at their column defaults
+     * (stripe_account_id = null, is_verified = false) means:
+     *   - onboarding works: SellerStripeController creates a real Express account;
+     *   - Buy Now fails gracefully with OrderController's 422 guard, not a 502.
+     * Only `role` is forced here, so re-running the seeder never clobbers a seller
+     * who has since completed genuine onboarding.
      */
-    private function makeSeller(string $name, string $email, string $stripeAccountId): User
+    private function makeSeller(string $name, string $email): User
     {
         $user = User::firstOrCreate(
             ['email' => $email],
             ['name' => $name, 'password' => 'password123'], // 'hashed' cast -> plain text
         );
 
-        // role / is_verified / stripe_account_id are guarded -> forceFill only.
-        $user->forceFill([
-            'role' => 'seller',
-            'is_verified' => true,
-            'stripe_account_id' => $stripeAccountId,
-        ])->save();
+        // role is guarded -> forceFill only.
+        $user->forceFill(['role' => 'seller'])->save();
 
         $user->syncRoles(['seller']);
 

@@ -8,6 +8,8 @@ use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Spatie\Permission\Traits\HasRoles;       // gives us assignRole(), hasRole(), etc.
 use Tymon\JWTAuth\Contracts\JWTSubject;       // contract required to issue JWTs for this model
+use Filament\Models\Contracts\FilamentUser;
+use Filament\Panel;
 
 /**
  * Application user.
@@ -18,9 +20,37 @@ use Tymon\JWTAuth\Contracts\JWTSubject;       // contract required to issue JWTs
  *
  * Implements JWTSubject so tymon/jwt-auth can encode/decode this model in tokens.
  */
-class User extends Authenticatable implements JWTSubject
+class User extends Authenticatable implements JWTSubject, FilamentUser
 {
     use HasFactory, Notifiable, HasRoles;
+
+    /**
+     * The guard name Spatie Laravel Permission uses to authorize this model.
+     * Forces both JWT (api) and Web Session (web) guards to share the 'api' role definitions.
+     *
+     * @var string
+     */
+    protected $guard_name = 'api';
+
+    /**
+     * Determine if the user is authorized to access the given Filament panel.
+     */
+    public function canAccessPanel(Panel $panel): bool
+    {
+        if ($panel->getId() === 'admin') {
+            return $this->hasRole('admin');
+        }
+
+        if ($panel->getId() === 'seller') {
+            return $this->hasRole('seller');
+        }
+
+        if ($panel->getId() === 'buyer') {
+            return $this->hasRole('buyer');
+        }
+
+        return false;
+    }
 
     /**
      * Mass-assignable attributes.
@@ -74,6 +104,14 @@ class User extends Authenticatable implements JWTSubject
     public function listings(): HasMany
     {
         return $this->hasMany(Listing::class, 'seller_id');
+    }
+
+    /**
+     * This user's registered device push (FCM) tokens.
+     */
+    public function deviceTokens(): HasMany
+    {
+        return $this->hasMany(DeviceToken::class);
     }
 
     /* -----------------------------------------------------------------

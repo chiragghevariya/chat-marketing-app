@@ -2,18 +2,8 @@
 // ChatScreen — a single conversation's real-time message thread.
 //
 // Loads the message history, marks the conversation read, then renders an
-// inverted FlatList of MessageBubble rows. New messages arrive two ways:
-//   1. Pusher (private-conversation.<id>, event "message.sent") for the OTHER
-//      party. The backend broadcasts toOthers, so the sender never gets an echo.
-//   2. The POST response when WE send — we append our own message manually.
-// Both paths funnel through addMessage(), which de-dupes by message id.
-//
-// LIST ORIENTATION CHOICE: we use an inverted FlatList fed a NEWEST-FIRST array.
-// Inverted lists automatically pin to the bottom and reveal new items at the
-// bottom without any manual scrollToEnd ref juggling, and they keep the latest
-// messages mounted, which is exactly what a chat UI wants. Because the list is
-// inverted, the data array is kept newest-first (the API already returns it
-// that way), and we simply prepend new messages.
+// inverted FlatList of MessageBubble rows.
+// Redesigned with dynamic theme support, modern composer input, and better keyboard adjustments.
 // ---------------------------------------------------------------------------
 
 import React, {
@@ -33,67 +23,66 @@ import {
   ActivityIndicator,
   StyleSheet,
 } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useFocusEffect } from '@react-navigation/native';
 
 import api from '../config/api';
 import { useAuth } from '../store/AuthContext';
 import { useConversationChannel } from '../hooks/usePusher';
+import { setActiveConversation } from '../services/realtime';
 import MessageBubble from '../components/MessageBubble';
-import { colors, spacing, radius } from '../config/theme';
+import { useTheme } from '../store/ThemeContext';
+import { useChat } from '../store/ChatContext';
 
 export default function ChatScreen({ navigation, route }) {
-  // Route params: which conversation to show + the title for the header.
-  const { conversationId, title } = route.params || {};
-
+  // `fromPush` is a per-tap nonce set by the notification router; it changes when
+  // the screen is (re)opened from a push so the fetch effect below reloads the
+  // latest messages even if this Chat screen instance is reused.
+  const { conversationId, title, fromPush } = route.params || {};
   const { user } = useAuth();
+  const { colors, spacing, radius, isDark } = useTheme();
+  const { markLocalAsRead } = useChat();
+  const insets = useSafeAreaInsets();
+  const styles = getStyles(colors, spacing, radius, isDark, insets);
 
-  // Messages are stored NEWEST-FIRST to match the inverted FlatList (see header).
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(true);
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
 
-  // ---- Header title -------------------------------------------------------
-  // Set the navigation header to the listing title passed in route params.
   useLayoutEffect(() => {
-    navigation.setOptions({ title: title || 'Chat' });
+    navigation.setOptions({ 
+      title: title || 'Chat',
+    });
   }, [navigation, title]);
 
-  // ---- Add a message with id-based de-duplication --------------------------
-  // Both the Pusher handler and our own send path call this. We guard against
-  // duplicates by id: a fast network could deliver our POST response while a
-  // (theoretical) echo or refetch also adds the same row. New messages go to
-  // the FRONT because the array is newest-first (inverted list).
   const addMessage = useCallback((msg) => {
     if (!msg || msg.id == null) return;
     setMessages((prev) => {
       if (prev.some((m) => m.id === msg.id)) {
-        return prev; // already present — ignore the duplicate
+        return prev;
       }
       return [msg, ...prev];
     });
   }, []);
 
-  // ---- Initial load -------------------------------------------------------
   useEffect(() => {
     let mounted = true;
-
     (async () => {
       if (!conversationId) {
         setLoading(false);
         return;
       }
       try {
-        // messages() returns a paginated object, NEWEST FIRST. Our inverted
-        // list also wants newest-first, so we keep res.data as-is.
         const res = await api.conversations.messages(conversationId);
         if (mounted) {
           setMessages(Array.isArray(res && res.data) ? res.data : []);
         }
-        // Mark the thread read once history is loaded. Best-effort: a failure
-        // here should not block the user from chatting.
         await api.conversations.markRead(conversationId).catch(() => {});
+        markLocalAsRead(conversationId);
       } catch (e) {
-        // Leave the list empty on failure; the empty state will render.
+        // Safe fallback
       } finally {
         if (mounted) setLoading(false);
       }
@@ -102,89 +91,90 @@ export default function ChatScreen({ navigation, route }) {
     return () => {
       mounted = false;
     };
-  }, [conversationId]);
+    // `fromPush` re-runs this when reopened from a notification so the newest
+    // message is fetched immediately (and the conversation is marked read).
+  }, [conversationId, fromPush]);
 
-  // ---- Real-time subscription ---------------------------------------------
-  // Subscribe to private-conversation.<id> and bind "message.sent". The handler
-  // receives a Message payload from the OTHER party (backend broadcasts
-  // toOthers, so our own messages never echo back here). addMessage de-dupes.
+  // Realtime append of incoming messages while viewing (Pusher message.sent).
   useConversationChannel(conversationId, addMessage);
 
-  // ---- Send a message -----------------------------------------------------
+  // Mark this as the active conversation while the screen is focused so incoming
+  // pushes for it are suppressed (and marked read) instead of showing a banner.
+  useFocusEffect(
+    useCallback(() => {
+      setActiveConversation(conversationId);
+      return () => setActiveConversation(null);
+    }, [conversationId])
+  );
+
   const handleSend = useCallback(async () => {
     const text = draft.trim();
-    // Never send empty / whitespace-only messages.
     if (!text || sending) return;
 
     setSending(true);
-    setDraft(''); // clear the input immediately for a responsive feel
+    setDraft('');
     try {
-      // sendMessage(id, content) -> the created Message. Because the backend
-      // broadcasts toOthers, WE must append our own message from this response.
       const m = await api.conversations.sendMessage(conversationId, text);
       addMessage(m);
     } catch (e) {
-      // Restore the draft so the user can retry without retyping.
       setDraft(text);
     } finally {
       setSending(false);
     }
   }, [draft, sending, conversationId, addMessage]);
 
-  // ---- Render a single bubble ---------------------------------------------
   const renderItem = useCallback(
     ({ item }) => {
-      // No is_mine flag from the backend: compare sender id to the current user.
-      const isMine =
-        !!user && !!item.sender && item.sender.id === user.id;
+      const isMine = !!user && !!item.sender && item.sender.id === user.id;
       return <MessageBubble message={item} isMine={isMine} />;
     },
     [user],
   );
 
   const keyExtractor = useCallback((item) => String(item.id), []);
-
   const canSend = draft.trim().length > 0 && !sending;
 
   return (
     <KeyboardAvoidingView
       style={styles.container}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      // Offset accounts for the navigation header height on iOS.
       keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
     >
       {loading ? (
         <View style={styles.center}>
-          <ActivityIndicator color={colors.accent} />
+          <ActivityIndicator color={colors.accent} size="large" />
+        </View>
+      ) : messages.length === 0 ? (
+        <View style={styles.emptyContainer}>
+          <View style={styles.chatIconWrapper}>
+            <Ionicons name="chatbubble-ellipses-outline" size={32} color={colors.textMuted} />
+          </View>
+          <Text style={styles.emptyText}>
+            No messages yet.
+          </Text>
+          <Text style={styles.emptySubText}>
+            Send a friendly greeting to start your conversation!
+          </Text>
         </View>
       ) : (
         <FlatList
-          // Inverted: newest-first data renders bottom-up and auto-pins to the
-          // latest message, so no scroll ref / scrollToEnd is needed.
           inverted
           data={messages}
           keyExtractor={keyExtractor}
           renderItem={renderItem}
           contentContainerStyle={styles.listContent}
           keyboardShouldPersistTaps="handled"
-          ListEmptyComponent={
-            <View style={styles.empty}>
-              <Text style={styles.emptyText}>
-                No messages yet. Say hello!
-              </Text>
-            </View>
-          }
         />
       )}
 
-      {/* Composer: text input + accent Send button. */}
+      {/* Composer box */}
       <View style={styles.composer}>
         <TextInput
           style={styles.input}
           value={draft}
           onChangeText={setDraft}
-          placeholder="Type a message"
-          placeholderTextColor={colors.textMuted}
+          placeholder="Type a message..."
+          placeholderTextColor={colors.muted}
           multiline
           editable={!sending}
           returnKeyType="send"
@@ -198,73 +188,98 @@ export default function ChatScreen({ navigation, route }) {
           accessibilityRole="button"
           accessibilityLabel="Send message"
         >
-          <Text style={styles.sendLabel}>Send</Text>
+          {sending ? (
+            <ActivityIndicator size="small" color={colors.textInverse} />
+          ) : (
+            <Ionicons name="send" size={16} color={colors.textInverse} />
+          )}
         </TouchableOpacity>
       </View>
     </KeyboardAvoidingView>
   );
 }
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: colors.background,
-  },
-  center: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  listContent: {
-    paddingVertical: spacing.md,
-    flexGrow: 1,
-  },
-  empty: {
-    // Inverted list flips children, so flip the empty state back upright.
-    transform: [{ scaleY: -1 }],
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingTop: spacing.xxl,
-  },
-  emptyText: {
-    color: colors.textMuted,
-    fontSize: 14,
-  },
-  composer: {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: colors.border,
-    backgroundColor: colors.surface,
-  },
-  input: {
-    flex: 1,
-    maxHeight: 120,
-    minHeight: 40,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-    backgroundColor: colors.divider,
-    borderRadius: radius.lg,
-    fontSize: 15,
-    color: colors.text,
-  },
-  sendButton: {
-    marginLeft: spacing.sm,
-    paddingHorizontal: spacing.lg,
-    height: 40,
-    borderRadius: radius.lg,
-    backgroundColor: colors.accent,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  sendButtonDisabled: {
-    opacity: 0.5,
-  },
-  sendLabel: {
-    color: colors.textInverse,
-    fontSize: 15,
-    fontWeight: '600',
-  },
-});
+const getStyles = (colors, spacing, radius, isDark, insets) =>
+  StyleSheet.create({
+    container: {
+      flex: 1,
+      backgroundColor: colors.background,
+    },
+    center: {
+      flex: 1,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    listContent: {
+      paddingVertical: spacing.md,
+      flexGrow: 1,
+    },
+    emptyContainer: {
+      flex: 1,
+      alignItems: 'center',
+      justifyContent: 'center',
+      paddingHorizontal: spacing.xl,
+    },
+    chatIconWrapper: {
+      width: 60,
+      height: 60,
+      borderRadius: 30,
+      backgroundColor: isDark ? '#2D2D2D' : '#F0F0F0',
+      alignItems: 'center',
+      justifyContent: 'center',
+      marginBottom: spacing.sm,
+    },
+    emptyText: {
+      color: colors.text,
+      fontSize: 16,
+      fontWeight: '700',
+    },
+    emptySubText: {
+      color: colors.textMuted,
+      fontSize: 13,
+      textAlign: 'center',
+      marginTop: spacing.xs,
+    },
+    composer: {
+      flexDirection: 'row',
+      alignItems: 'flex-end',
+      paddingHorizontal: spacing.md,
+      paddingTop: spacing.sm,
+      paddingBottom: Platform.OS === 'ios' ? insets.bottom + spacing.sm : spacing.md,
+      borderTopWidth: 1.5,
+      borderTopColor: colors.border,
+      backgroundColor: colors.surface,
+    },
+    input: {
+      flex: 1,
+      maxHeight: 120,
+      minHeight: 44,
+      paddingHorizontal: spacing.md,
+      paddingVertical: spacing.sm,
+      backgroundColor: isDark ? colors.background : colors.divider,
+      borderRadius: radius.md,
+      fontSize: 15,
+      color: colors.text,
+      borderWidth: isDark ? 1.5 : 0,
+      borderColor: colors.border,
+    },
+    sendButton: {
+      marginLeft: spacing.sm,
+      width: 44,
+      height: 44,
+      borderRadius: 22,
+      backgroundColor: colors.accent,
+      alignItems: 'center',
+      justifyContent: 'center',
+      shadowColor: colors.accent,
+      shadowOffset: { width: 0, height: 2 },
+      shadowOpacity: 0.25,
+      shadowRadius: 4,
+      elevation: 2,
+    },
+    sendButtonDisabled: {
+      opacity: 0.45,
+      shadowOpacity: 0,
+      elevation: 0,
+    },
+  });

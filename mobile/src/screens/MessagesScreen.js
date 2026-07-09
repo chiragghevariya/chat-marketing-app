@@ -2,18 +2,12 @@
 // MessagesScreen (Tab 2)
 //
 // Lists the logged-in user's conversations. Each row shows the OTHER party's
-// avatar, the listing title, and a preview of the last message, plus an unread
-// badge when there are unread messages. Tapping a row opens the Chat screen.
-//
-// Backend contract notes:
-// - api.conversations.list() returns paginated { data, links, meta }; rows live
-//   in res.data.
-// - There is NO other_party field: compute it by comparing buyer.id / seller.id
-//   against the logged-in user id.
-// - last_message may be null; show a placeholder in that case.
+// avatar, their name, a badge with the listing title, the last message preview,
+// and the timestamp of the last message, plus an unread count badge.
+// Redesigned with dynamic theme support, premium border styles, and modern lists.
 // ---------------------------------------------------------------------------
 
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import {
   View,
   Text,
@@ -25,47 +19,62 @@ import {
   StyleSheet,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
+import { Ionicons } from '@expo/vector-icons';
 
-import api from '../config/api';
 import { useAuth } from '../store/AuthContext';
-import { colors, spacing, radius } from '../config/theme';
+import { useTheme } from '../store/ThemeContext';
+import { useChat } from '../store/ChatContext';
+
+function formatLastMessageTime(timestamp) {
+  if (!timestamp) return '';
+  const date = new Date(timestamp);
+  if (isNaN(date.getTime())) return '';
+
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const messageDate = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+
+  const diffMs = today - messageDate;
+  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+
+  if (diffDays === 0) {
+    let hours = date.getHours();
+    const minutes = String(date.getMinutes()).padStart(2, '0');
+    const ampm = hours >= 12 ? 'PM' : 'AM';
+    hours = hours % 12;
+    hours = hours ? hours : 12; // the hour '0' should be '12'
+    return `${hours}:${minutes} ${ampm}`;
+  } else if (diffDays === 1) {
+    return 'Yesterday';
+  } else if (diffDays < 7) {
+    const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    return days[date.getDay()];
+  } else {
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    return `${months[date.getMonth()]} ${date.getDate()}`;
+  }
+}
 
 export default function MessagesScreen({ navigation }) {
   const { user } = useAuth();
+  const { colors, spacing, radius, isDark } = useTheme();
+  const { conversations, loading, refreshConversations } = useChat();
+  const styles = getStyles(colors, spacing, radius, isDark);
 
-  const [conversations, setConversations] = useState([]);
-  const [loading, setLoading] = useState(true); // first load spinner
-  const [refreshing, setRefreshing] = useState(false); // pull-to-refresh
+  const [refreshing, setRefreshing] = useState(false);
 
-  // Fetch the conversation list. `isRefresh` distinguishes pull-to-refresh
-  // (keep current list visible) from the initial load (show the spinner).
-  const loadConversations = useCallback(async (isRefresh = false) => {
-    if (isRefresh) {
-      setRefreshing(true);
-    } else {
-      setLoading(true);
-    }
-    try {
-      const res = await api.conversations.list();
-      // Paginated payload: rows are in res.data.
-      setConversations(Array.isArray(res && res.data) ? res.data : []);
-    } catch (e) {
-      // On error keep the screen usable; surface an empty list rather than crash.
-      setConversations([]);
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
-  }, []);
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await refreshConversations(false);
+    setRefreshing(false);
+  }, [refreshConversations]);
 
-  // Refresh whenever the tab gains focus so new/updated threads appear.
   useFocusEffect(
     useCallback(() => {
-      loadConversations(false);
-    }, [loadConversations])
+      refreshConversations(false);
+    }, [refreshConversations])
   );
 
-  // Resolve the "other party" of a conversation relative to the current user.
   const getOtherParty = useCallback(
     (conversation) => {
       const meId = user && user.id;
@@ -85,39 +94,61 @@ export default function MessagesScreen({ navigation }) {
         ? item.last_message.content
         : 'No messages yet';
 
+      const otherName = other.name || 'User';
+      const listingTitle = (item.listing && item.listing.title) || 'Listing';
+      const timeLabel = formatLastMessageTime(
+        item.last_message_at || (item.last_message && item.last_message.created_at)
+      );
+
       return (
         <TouchableOpacity
-          style={styles.row}
-          activeOpacity={0.7}
+          style={[styles.row, unread && styles.rowUnread]}
+          activeOpacity={0.8}
           onPress={() =>
             navigation.navigate('Chat', {
               conversationId: item.id,
-              title: item.listing && item.listing.title,
+              title: listingTitle,
             })
           }
         >
-          {/* Other-party avatar with a first-letter fallback circle. */}
-          {other.avatar ? (
-            <Image source={{ uri: other.avatar }} style={styles.avatar} />
-          ) : (
-            <View style={[styles.avatar, styles.avatarFallback]}>
-              <Text style={styles.avatarFallbackText}>
-                {other.name ? other.name.charAt(0).toUpperCase() : '?'}
+          {/* Avatar with fallback character */}
+          <View style={styles.avatarContainer}>
+            {other.avatar ? (
+              <Image source={{ uri: other.avatar }} style={styles.avatar} />
+            ) : (
+              <View style={[styles.avatar, styles.avatarFallback]}>
+                <Text style={styles.avatarFallbackText}>
+                  {otherName.charAt(0).toUpperCase()}
+                </Text>
+              </View>
+            )}
+            {unread && <View style={styles.unreadStatusIndicator} />}
+          </View>
+
+          {/* Core metadata text */}
+          <View style={styles.rowBody}>
+            <View style={styles.rowHeader}>
+              <Text style={[styles.nameText, unread && styles.nameTextUnread]} numberOfLines={1}>
+                {otherName}
+              </Text>
+              {timeLabel ? <Text style={[styles.timeText, unread && styles.timeTextUnread]}>{timeLabel}</Text> : null}
+            </View>
+
+            {/* Listing details tag */}
+            <View style={styles.listingBadge}>
+              <Ionicons name="pricetag" size={10} color={colors.accent} />
+              <Text style={styles.listingBadgeText} numberOfLines={1} allowFontScaling={false}>
+                {listingTitle}
               </Text>
             </View>
-          )}
 
-          {/* Listing title + last message preview. */}
-          <View style={styles.rowBody}>
-            <Text style={styles.title} numberOfLines={1}>
-              {(item.listing && item.listing.title) || 'Listing'}
-            </Text>
-            <Text style={styles.preview} numberOfLines={1}>
+            {/* Message preview snippet */}
+            <Text style={[styles.preview, unread && styles.previewUnread]} numberOfLines={1}>
               {preview}
             </Text>
           </View>
 
-          {/* Right-aligned unread badge (orange pill). */}
+          {/* Right aligned count badge */}
           {unread ? (
             <View style={styles.badge}>
               <Text style={styles.badgeText}>{item.unread_count}</Text>
@@ -126,10 +157,9 @@ export default function MessagesScreen({ navigation }) {
         </TouchableOpacity>
       );
     },
-    [getOtherParty, navigation]
+    [getOtherParty, navigation, colors]
   );
 
-  // First-load spinner.
   if (loading) {
     return (
       <View style={styles.center}>
@@ -140,6 +170,7 @@ export default function MessagesScreen({ navigation }) {
 
   return (
     <FlatList
+      style={styles.list}
       data={conversations}
       keyExtractor={(item) => String(item.id)}
       renderItem={renderItem}
@@ -150,96 +181,191 @@ export default function MessagesScreen({ navigation }) {
       refreshControl={
         <RefreshControl
           refreshing={refreshing}
-          onRefresh={() => loadConversations(true)}
+          onRefresh={onRefresh}
           tintColor={colors.accent}
           colors={[colors.accent]}
         />
       }
       ListEmptyComponent={
         <View style={styles.center}>
+          <View style={styles.emptyIconContainer}>
+            <Ionicons
+              name="chatbubbles-outline"
+              size={40}
+              color={colors.textMuted}
+            />
+          </View>
           <Text style={styles.emptyText}>No conversations yet</Text>
+          <Text style={styles.emptySubText}>
+            Direct messages regarding listings you are buying or selling will appear here.
+          </Text>
         </View>
       }
     />
   );
 }
 
-const AVATAR_SIZE = 52;
+const AVATAR_SIZE = 54;
 
-const styles = StyleSheet.create({
-  center: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: colors.background,
-  },
-  // Empty list still needs to fill the screen so the empty state centers.
-  emptyContainer: {
-    flexGrow: 1,
-    backgroundColor: colors.background,
-  },
-  listContent: {
-    backgroundColor: colors.background,
-  },
-  emptyText: {
-    color: colors.textMuted,
-    fontSize: 16,
-  },
-  row: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.md,
-    backgroundColor: colors.surface,
-  },
-  separator: {
-    height: 1,
-    backgroundColor: colors.divider,
-    marginLeft: spacing.lg + AVATAR_SIZE + spacing.md,
-  },
-  avatar: {
-    width: AVATAR_SIZE,
-    height: AVATAR_SIZE,
-    borderRadius: AVATAR_SIZE / 2,
-    backgroundColor: colors.skeleton,
-  },
-  avatarFallback: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: colors.accentSoft,
-  },
-  avatarFallbackText: {
-    color: colors.accent,
-    fontSize: 20,
-    fontWeight: '700',
-  },
-  rowBody: {
-    flex: 1,
-    marginLeft: spacing.md,
-    marginRight: spacing.sm,
-  },
-  title: {
-    color: colors.text,
-    fontSize: 16,
-    fontWeight: '600',
-    marginBottom: spacing.xs,
-  },
-  preview: {
-    color: colors.textMuted,
-    fontSize: 14,
-  },
-  badge: {
-    minWidth: 22,
-    height: 22,
-    paddingHorizontal: spacing.xs + 2,
-    borderRadius: radius.pill,
-    backgroundColor: colors.accent,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  badgeText: {
-    color: colors.textInverse,
-    fontSize: 12,
-    fontWeight: '700',
-  },
-});
+const getStyles = (colors, spacing, radius, isDark) =>
+  StyleSheet.create({
+    center: {
+      flex: 1,
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: colors.background,
+    },
+    emptyContainer: {
+      flexGrow: 1,
+      backgroundColor: colors.background,
+    },
+    list: {
+      flex: 1,
+      backgroundColor: colors.background,
+    },
+    listContent: {
+      backgroundColor: colors.background,
+      paddingVertical: spacing.xs,
+    },
+    emptyIconContainer: {
+      width: 80,
+      height: 80,
+      borderRadius: 40,
+      backgroundColor: isDark ? '#2D2D2D' : '#F0F0F0',
+      alignItems: 'center',
+      justifyContent: 'center',
+      marginBottom: spacing.md,
+    },
+    emptyText: {
+      color: colors.text,
+      fontSize: 18,
+      fontWeight: '800',
+    },
+    emptySubText: {
+      color: colors.textMuted,
+      fontSize: 14,
+      marginTop: spacing.xs,
+      textAlign: 'center',
+      paddingHorizontal: spacing.xxl,
+      lineHeight: 20,
+    },
+    row: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingHorizontal: spacing.lg,
+      paddingVertical: spacing.md + 2,
+      backgroundColor: colors.surface,
+    },
+    rowUnread: {
+      backgroundColor: isDark ? 'rgba(230, 81, 0, 0.05)' : 'rgba(230, 81, 0, 0.02)',
+    },
+    separator: {
+      height: 1,
+      backgroundColor: colors.divider,
+      marginLeft: spacing.lg + AVATAR_SIZE + spacing.md,
+    },
+    avatarContainer: {
+      position: 'relative',
+    },
+    avatar: {
+      width: AVATAR_SIZE,
+      height: AVATAR_SIZE,
+      borderRadius: AVATAR_SIZE / 2,
+      backgroundColor: colors.skeleton,
+      borderWidth: 1,
+      borderColor: colors.border,
+    },
+    avatarFallback: {
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: colors.accentSoft,
+    },
+    avatarFallbackText: {
+      color: colors.accent,
+      fontSize: 20,
+      fontWeight: '700',
+    },
+    unreadStatusIndicator: {
+      position: 'absolute',
+      bottom: 0,
+      right: 0,
+      width: 13,
+      height: 13,
+      borderRadius: 6.5,
+      backgroundColor: colors.accent,
+      borderWidth: 2,
+      borderColor: colors.surface,
+    },
+    rowBody: {
+      flex: 1,
+      marginLeft: spacing.md,
+      marginRight: spacing.sm,
+    },
+    rowHeader: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      marginBottom: 3,
+    },
+    nameText: {
+      color: colors.text,
+      fontSize: 15,
+      fontWeight: '600',
+      flex: 1,
+      marginRight: spacing.sm,
+    },
+    nameTextUnread: {
+      fontWeight: '800',
+    },
+    timeText: {
+      color: colors.textMuted,
+      fontSize: 11,
+      fontWeight: '500',
+    },
+    timeTextUnread: {
+      color: colors.accent,
+      fontWeight: '700',
+    },
+    listingBadge: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      alignSelf: 'flex-start',
+      backgroundColor: colors.isDark ? '#2C1D15' : colors.accentSoft,
+      paddingHorizontal: 7,
+      paddingVertical: 2,
+      borderRadius: radius.sm,
+      marginBottom: spacing.xs,
+    },
+    listingBadgeText: {
+      fontSize: 10,
+      fontWeight: '700',
+      color: colors.accent,
+      marginLeft: 3,
+      maxWidth: 160,
+      textTransform: 'uppercase',
+    },
+    preview: {
+      color: colors.textMuted,
+      fontSize: 13,
+      fontWeight: '500',
+    },
+    previewUnread: {
+      color: colors.text,
+      fontWeight: '800',
+    },
+    badge: {
+      minWidth: 20,
+      height: 20,
+      paddingHorizontal: 6,
+      borderRadius: 10,
+      backgroundColor: colors.accent,
+      alignItems: 'center',
+      justifyContent: 'center',
+      marginLeft: spacing.xs,
+    },
+    badgeText: {
+      color: colors.textInverse,
+      fontSize: 11,
+      fontWeight: '800',
+    },
+  });

@@ -6,10 +6,12 @@ use App\Events\MessageSent;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Chat\SendMessageRequest;
 use App\Http\Resources\MessageResource;
+use App\Jobs\SendChatPushNotification;
 use App\Models\Conversation;
 use App\Services\ImageUploadService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
+use Illuminate\Support\Str;
 
 /**
  * Handles the messages inside a conversation: listing, sending and marking read.
@@ -73,6 +75,30 @@ class MessageController extends Controller
         broadcast(new MessageSent($message))->toOthers();
 
         $message->load('sender');
+
+        // Queue a push notification to the OTHER participant (never the sender).
+        // This is separate from the Pusher broadcast above (which drives the live,
+        // in-app UI) and is queued + fail-safe, so Firebase can never block or break
+        // message sending.
+        $receiverId = $conversation->buyer_id === $message->sender_id
+            ? $conversation->seller_id
+            : $conversation->buyer_id;
+
+        $preview = $message->type === 'image'
+            ? '📷 Photo'
+            : Str::limit((string) $message->content, 100);
+
+        SendChatPushNotification::dispatch(
+            $receiverId,
+            'New message',
+            $message->sender->name.': '.$preview,
+            [
+                'conversation_id' => (string) $conversation->id,
+                'message_id' => (string) $message->id,
+                'sender_id' => (string) $message->sender_id,
+                'type' => 'chat',
+            ],
+        );
 
         return (new MessageResource($message))
             ->response()

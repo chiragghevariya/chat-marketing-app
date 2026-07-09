@@ -29,37 +29,12 @@ class DatabaseSeeder extends Seeder
         $seller = $this->makeUser('Sally Seller', 'seller@example.com', 'seller');
         $this->makeUser('Bob Buyer', 'buyer@example.com', 'buyer');
 
-        // --- Sample listings for the demo seller -------------------------------
-        $phones = Category::where('name', 'Phones')->first();
-        $laptops = Category::where('name', 'Laptops')->first();
 
-        if ($phones && $laptops) {
-            Listing::create([
-                'seller_id' => $seller->id,
-                'category_id' => $phones->id,
-                'title' => 'iPhone 14 Pro - Like New',
-                'description' => 'Barely used, comes with original box and charger.',
-                'price' => 799.00,
-                'status' => 'active',
-                'condition' => 'like_new',
-                'location' => 'Brooklyn, NY',
-                'lat' => 40.6782,
-                'lng' => -73.9442,
-            ]);
 
-            Listing::create([
-                'seller_id' => $seller->id,
-                'category_id' => $laptops->id,
-                'title' => 'MacBook Air M2 13"',
-                'description' => '8GB RAM, 256GB SSD. Excellent condition.',
-                'price' => 949.50,
-                'status' => 'active',
-                'condition' => 'used',
-                'location' => 'Manhattan, NY',
-                'lat' => 40.7831,
-                'lng' => -73.9712,
-            ]);
-        }
+        // Call the image polisher seeder at the end to catch all products
+        $this->call([
+            ProductImagePolishSeeder::class,
+        ]);
     }
 
     /**

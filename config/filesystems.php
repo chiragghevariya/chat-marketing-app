@@ -17,6 +17,20 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Upload Disk (App\Services\ImageUploadService)
+    |--------------------------------------------------------------------------
+    |
+    | The disk ImageUploadService writes listing/avatar media to. Set UPLOAD_DISK
+    | to force a choice; otherwise it auto-selects: "s3" when an AWS_BUCKET is
+    | configured, or the local "public" disk as a zero-config dev fallback (run
+    | `php artisan storage:link` once so the files are web-servable).
+    |
+    */
+
+    'uploads' => env('UPLOAD_DISK') ?: (env('AWS_BUCKET') ? 's3' : 'public'),
+
+    /*
+    |--------------------------------------------------------------------------
     | Filesystem Disks
     |--------------------------------------------------------------------------
     |

@@ -90,9 +90,14 @@ class AuthController extends Controller
      *
      * Returns the currently authenticated user (requires a valid token).
      */
-    public function me(): UserResource
+    public function me(): JsonResponse
     {
-        return new UserResource(auth('api')->user());
+        // Return the resource via response()->json() (NOT directly) so the payload
+        // is the flat user object — identical to the "user" shape login/register
+        // return. Returning the resource directly would wrap it in a { "data": ... }
+        // envelope, which the app does not expect (it would break name/avatar display
+        // and stripe_account_id / is_verified detection after refreshUser()).
+        return response()->json(new UserResource(auth('api')->user()));
     }
 
     /**

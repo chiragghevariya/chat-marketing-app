@@ -17,9 +17,16 @@ use RuntimeException;
 class ImageUploadService
 {
     /**
-     * Name of the filesystem disk to use (see config/filesystems.php).
+     * Name of the filesystem disk to use. Resolved from config('filesystems.uploads'),
+     * which is "s3" when AWS is configured and the local "public" disk otherwise, so
+     * uploads work in development without any AWS credentials.
      */
-    private string $disk = 's3';
+    private string $disk;
+
+    public function __construct()
+    {
+        $this->disk = config('filesystems.uploads', 's3');
+    }
 
     /**
      * Upload a single image to S3 and return its public URL.

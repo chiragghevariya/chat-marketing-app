@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "995089004895",
+    "project_id": "chat-marketing-app-2f1fb",
+    "storage_bucket": "chat-marketing-app-2f1fb.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:995089004895:android:1ebd9f1086f80d93b95eea",
+        "android_client_info": {
+          "package_name": "com.chatmarketplace.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBwfCIJIJi35eCOHRFOFL6SQqzLYqEhsg0"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

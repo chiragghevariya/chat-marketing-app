@@ -29,6 +29,35 @@ export function setAuthToken(token) {
   }
 }
 
+// App-level handler invoked when any request returns 401 (expired/invalid JWT).
+// AuthContext registers its logout here so a stale session is cleared app-wide
+// and RootNavigator routes the user back to Login. A re-entrancy guard prevents
+// the handler's own logout request (which may also 401) from looping.
+let onUnauthorized = null;
+let handlingUnauthorized = false;
+
+export function registerUnauthorizedHandler(handler) {
+  onUnauthorized = handler;
+}
+
+http.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    const status = error && error.response ? error.response.status : null;
+    if (status === 401 && onUnauthorized && !handlingUnauthorized) {
+      handlingUnauthorized = true;
+      // Fire-and-forget; the original promise still rejects so callers can react.
+      Promise.resolve()
+        .then(() => onUnauthorized())
+        .catch(() => {})
+        .finally(() => {
+          handlingUnauthorized = false;
+        });
+    }
+    return Promise.reject(error);
+  }
+);
+
 // Cold-start safety net: if no Authorization header is set yet (AuthContext has
 // not run), read the persisted JWT from AsyncStorage and attach it.
 http.interceptors.request.use(async (config) => {
@@ -94,6 +123,26 @@ function buildListingFormData(data) {
 // Reusable multipart header for file uploads.
 const MULTIPART = { headers: { 'Content-Type': 'multipart/form-data' } };
 
+// Laravel serializes a SINGLE API Resource as { "data": {...} } when a controller
+// returns it via ->response() (e.g. POST /conversations/{id}/messages). Other
+// endpoints return the object flat, and Pusher event payloads are flat too. This
+// normalizes a single wrapped resource to its flat object so callers always get a
+// consistent shape with a valid top-level `id`. Paginated collections (which carry
+// data + links/meta) are left untouched so list endpoints keep working as before.
+function unwrapResource(body) {
+  if (
+    body &&
+    typeof body === 'object' &&
+    body.data &&
+    !Array.isArray(body.data) &&
+    body.links === undefined &&
+    body.meta === undefined
+  ) {
+    return body.data;
+  }
+  return body;
+}
+
 // ---------------------------------------------------------------------------
 // API surface — exact shape required by the rest of the app.
 // Every method resolves to the parsed response body (response.data).
@@ -145,10 +194,12 @@ export const api = {
     messages: (id) =>
       http.get('/conversations/' + id + '/messages').then((r) => r.data),
     // POST /conversations/{id}/messages { content } -> Message
+    // The endpoint returns the message wrapped as { data: {...} }; unwrap it so the
+    // caller (ChatScreen.addMessage) receives a flat message with a top-level id.
     sendMessage: (id, content) =>
       http
         .post('/conversations/' + id + '/messages', { content })
-        .then((r) => r.data),
+        .then((r) => unwrapResource(r.data)),
     // POST /conversations/{id}/read -> { message, updated }
     markRead: (id) =>
       http.post('/conversations/' + id + '/read').then((r) => r.data),
@@ -174,6 +225,15 @@ export const api = {
     // POST /seller/stripe/connect-account -> { onboarding_url, stripe_account_id }
     connect: () =>
       http.post('/seller/stripe/connect-account').then((r) => r.data),
+  },
+
+  deviceTokens: {
+    // POST /device-tokens { token, platform } -> upsert this device's FCM token
+    register: (body) =>
+      http.post('/device-tokens', body).then((r) => r.data),
+    // DELETE /device-tokens { token } -> remove this device's token (on logout)
+    remove: (body) =>
+      http.delete('/device-tokens', { data: body }).then((r) => r.data),
   },
 };
 

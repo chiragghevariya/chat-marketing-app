@@ -7,23 +7,37 @@
     "scheme": "marketplace",
     "userInterfaceStyle": "light",
     "newArchEnabled": false,
-    "assetBundlePatterns": ["**/*"],
+    "splash": {
+      "backgroundColor": "#ffffff",
+      "resizeMode": "contain"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.example.marketplace"
+      "bundleIdentifier": "com.chatmarketplace.app",
+      "googleServicesFile": "./GoogleService-Info.plist"
     },
     "android": {
-      "package": "com.example.marketplace"
+      "package": "com.chatmarketplace.app",
+      "googleServicesFile": "./google-services.json",
+      "permissions": [
+        "android.permission.POST_NOTIFICATIONS"
+      ]
     },
     "plugins": [
+      "@react-native-firebase/app",
       "expo-image-picker",
       [
         "@stripe/stripe-react-native",
         {
-          "merchantIdentifier": "merchant.com.example.marketplace",
+          "merchantIdentifier": "merchant.com.chatmarketplace.app",
           "enableGooglePay": false
         }
-      ]
+      ],
+      "expo-font",
+      "./plugins/withNotifeeMavenRepo"
     ]
   }
 }

@@ -2,14 +2,10 @@
 // ListingDetailScreen
 //
 // Shows a single listing fetched by id (route.params.listingId):
-//   - A paged image carousel with dot indicators.
+//   - A paged image carousel with dot indicators + floating favorite button.
 //   - Title, price, condition + location, and description.
 //   - A seller row with avatar, name and a verified badge.
-//   - Two fixed action buttons near the bottom:
-//       * "Message Seller" -> starts a conversation and opens the Chat screen.
-//       * "Buy Now" -> runs the Stripe payment-sheet escrow flow.
-//   Both buttons are hidden on the viewer's own listing; "Buy Now" is also
-//   hidden when the listing is not active.
+//   - Two action buttons near the bottom: "Message Seller" and "Buy Now".
 // ---------------------------------------------------------------------------
 
 import React, { useEffect, useState } from 'react';
@@ -24,43 +20,49 @@ import {
   StyleSheet,
   Dimensions,
   Alert,
+  Platform,
+  Modal,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useStripe } from '@stripe/stripe-react-native';
+import Constants from 'expo-constants';
+
+const isExpoGo = Constants.appOwnership === 'expo';
 
 import api from '../config/api';
+import { getApiErrorMessage, isAuthError } from '../config/apiError';
 import { useAuth } from '../store/AuthContext';
-import { colors, spacing, radius } from '../config/theme';
+import { useTheme } from '../store/ThemeContext';
 
-// Full device width — used to size each carousel page so paging snaps cleanly.
 const SCREEN_WIDTH = Dimensions.get('window').width;
 
 export default function ListingDetailScreen({ navigation, route }) {
   const { listingId } = route.params || {};
   const { user } = useAuth();
   const { initPaymentSheet, presentPaymentSheet } = useStripe();
+  const { colors, spacing, radius, isDark } = useTheme();
+  const styles = getStyles(colors, spacing, radius, isDark);
 
   const [listing, setListing] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-
-  // Index of the currently visible carousel page (for dot indicators).
   const [activeImage, setActiveImage] = useState(0);
-  // Disables action buttons while the Stripe flow is in progress.
   const [processing, setProcessing] = useState(false);
+  const [isFavorite, setIsFavorite] = useState(false); // Visual local toggle
+  const [previewVisible, setPreviewVisible] = useState(false); // Modal visibility
 
-  // ---- Load the listing on mount / when the id changes --------------------
   useEffect(() => {
     let mounted = true;
-
     (async () => {
       try {
         setLoading(true);
         setError(null);
         const data = await api.listings.get(listingId);
-        if (mounted) setListing(data);
+        if (mounted) setListing(data && data.data ? data.data : data);
       } catch (e) {
-        if (mounted) setError('Could not load this listing.');
+        if (mounted && !isAuthError(e)) {
+          setError(getApiErrorMessage(e, 'Could not load this listing.'));
+        }
       } finally {
         if (mounted) setLoading(false);
       }
@@ -71,67 +73,68 @@ export default function ListingDetailScreen({ navigation, route }) {
     };
   }, [listingId]);
 
-  // ---- Actions ------------------------------------------------------------
-
-  // Start (or reuse) a conversation with the seller, then open the chat.
   async function handleMessageSeller() {
     try {
-      const conv = await api.conversations.start({ listing_id: listing.id });
+      const res = await api.conversations.start({ listing_id: listing.id });
+      const conv = res && res.data ? res.data : res;
       navigation.navigate('Chat', {
         conversationId: conv.id,
         title: listing.title,
       });
     } catch (e) {
-      Alert.alert('Error', 'Could not start a conversation. Please try again.');
+      if (isAuthError(e)) return;
+      Alert.alert('Error', getApiErrorMessage(e, 'Could not start a conversation. Please try again.'));
     }
   }
 
-  // Run the Stripe payment-sheet flow, then finalize the escrow order.
   async function handleBuyNow() {
+    if (isExpoGo) {
+      Alert.alert(
+        'Payments unavailable in Expo Go',
+        'Card checkout uses Stripe’s native module, which Expo Go can’t load. Run a development build (expo run:android / run:ios) to test Buy Now.'
+      );
+      return;
+    }
+
     setProcessing(true);
     try {
-      // 1. Create the order on the backend -> { order, client_secret }.
       const { order, client_secret } = await api.orders.create({
         listing_id: listing.id,
       });
 
-      // 2. Initialize the payment sheet with the order's client secret.
       const init = await initPaymentSheet({
         merchantDisplayName: 'Marketplace',
         paymentIntentClientSecret: client_secret,
+        returnURL: 'marketplace://stripe-redirect',
       });
       if (init.error) {
         Alert.alert('Payment error', init.error.message);
         return;
       }
 
-      // 3. Present the sheet and let the user authorize the card.
       const { error } = await presentPaymentSheet();
       if (error) {
-        // The user dismissing the sheet is not a real error — stay silent.
         if (error.code !== 'Canceled') {
           Alert.alert('Payment error', error.message);
         }
         return;
       }
 
-      // 4. Card authorized — finalize the order (manual-capture escrow).
       await api.orders.confirmPayment(order.id);
       Alert.alert('Success', 'Your payment was authorized. The order is now pending.');
     } catch (e) {
-      Alert.alert('Error', 'Something went wrong processing your payment.');
+      if (isAuthError(e)) return;
+      Alert.alert('Payment error', getApiErrorMessage(e, 'Something went wrong processing your payment.'));
     } finally {
       setProcessing(false);
     }
   }
 
-  // Track the visible carousel page from the scroll offset.
   function handleCarouselScroll(e) {
     const x = e.nativeEvent.contentOffset.x;
     setActiveImage(Math.round(x / SCREEN_WIDTH));
   }
 
-  // ---- Loading / error states ---------------------------------------------
   if (loading) {
     return (
       <View style={styles.centered}>
@@ -143,26 +146,23 @@ export default function ListingDetailScreen({ navigation, route }) {
   if (error || !listing) {
     return (
       <View style={styles.centered}>
+        <Ionicons name="alert-circle-outline" size={48} color={colors.danger} style={{ marginBottom: spacing.sm }} />
         <Text style={styles.errorText}>{error || 'Listing not found.'}</Text>
       </View>
     );
   }
 
-  // ---- Derived display values ---------------------------------------------
   const images = listing.images || [];
   const price = `$${Number(listing.price).toFixed(2)}`;
   const seller = listing.seller || {};
-
-  // Whether this listing belongs to the logged-in user (hides action buttons).
   const isOwnListing = !!(user && seller.id === user.id);
-  // Buy Now is only offered for someone else's active listing.
   const canBuy = !isOwnListing && listing.status === 'active';
 
   return (
     <View style={styles.container}>
-      <ScrollView contentContainerStyle={styles.scrollContent}>
+      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
         {/* ---- Image carousel ---- */}
-        <View style={styles.carousel}>
+        <View style={styles.carouselContainer}>
           {images.length > 0 ? (
             <>
               <FlatList
@@ -174,15 +174,22 @@ export default function ListingDetailScreen({ navigation, route }) {
                 onScroll={handleCarouselScroll}
                 scrollEventThrottle={16}
                 renderItem={({ item }) => (
-                  <Image
-                    source={{ uri: item.url }}
-                    style={styles.carouselImage}
-                    resizeMode="cover"
-                  />
+                  <TouchableOpacity
+                    activeOpacity={0.95}
+                    onPress={() => setPreviewVisible(true)}
+                  >
+                    <Image
+                      source={{ uri: item.url }}
+                      style={styles.carouselImage}
+                      resizeMode="contain"
+                    />
+                  </TouchableOpacity>
                 )}
               />
 
-              {/* Dot indicators — only meaningful with more than one image */}
+
+
+              {/* Dot indicators */}
               {images.length > 1 ? (
                 <View style={styles.dots}>
                   {images.map((img, i) => (
@@ -198,49 +205,66 @@ export default function ListingDetailScreen({ navigation, route }) {
               ) : null}
             </>
           ) : (
-            // Placeholder when the listing has no images.
             <View style={styles.placeholder}>
-              <Ionicons name="image-outline" size={48} color={colors.muted} />
+              <Ionicons name="image-outline" size={64} color={colors.muted} />
+              <Text style={{ color: colors.textMuted, marginTop: spacing.sm, fontSize: 13, fontWeight: '500' }}>
+                No image available
+              </Text>
             </View>
           )}
         </View>
 
         {/* ---- Body ---- */}
         <View style={styles.body}>
+          {/* Price & Status Banner */}
+          <View style={styles.pricingRow}>
+            <Text style={styles.price}>{price}</Text>
+            <View style={[styles.statusBadge, listing.status === 'active' ? styles.statusActive : styles.statusSold]}>
+              <Text style={styles.statusBadgeText}>
+                {listing.status === 'active' ? 'Available' : 'Sold'}
+              </Text>
+            </View>
+          </View>
+
           <Text style={styles.title}>{listing.title}</Text>
-          <Text style={styles.price}>{price}</Text>
 
           {/* Condition + location meta row */}
           <View style={styles.metaRow}>
             {listing.condition ? (
-              <View style={styles.metaItem}>
-                <Ionicons
-                  name="pricetag-outline"
-                  size={15}
-                  color={colors.textMuted}
-                />
-                <Text style={styles.metaText}>{listing.condition}</Text>
+              <View style={styles.badgeItem}>
+                <Ionicons name="ribbon" size={14} color={colors.accent} />
+                <Text style={styles.badgeText}>
+                  {listing.condition.replace('_', ' ')}
+                </Text>
               </View>
             ) : null}
             {listing.location ? (
-              <View style={styles.metaItem}>
-                <Ionicons
-                  name="location-outline"
-                  size={15}
-                  color={colors.textMuted}
-                />
-                <Text style={styles.metaText}>{listing.location}</Text>
+              <View style={styles.badgeItem}>
+                <Ionicons name="location" size={14} color={colors.accent} />
+                <Text style={styles.badgeText}>{listing.location}</Text>
               </View>
             ) : null}
           </View>
 
-          {/* Description */}
+          {/* Section Divider */}
+          <View style={styles.sectionDivider} />
+
+          {/* Description Section */}
+          <Text style={styles.sectionTitle}>Description</Text>
           {listing.description ? (
             <Text style={styles.description}>{listing.description}</Text>
-          ) : null}
+          ) : (
+            <Text style={[styles.description, { fontStyle: 'italic', color: colors.textMuted }]}>
+              No description provided.
+            </Text>
+          )}
 
-          {/* ---- Seller row ---- */}
-          <View style={styles.sellerRow}>
+          {/* Section Divider */}
+          <View style={styles.sectionDivider} />
+
+          {/* ---- Seller info card ---- */}
+          <Text style={styles.sectionTitle}>Meet the Seller</Text>
+          <View style={styles.sellerCard}>
             <View style={styles.sellerAvatarWrap}>
               {seller.avatar ? (
                 <Image
@@ -248,13 +272,17 @@ export default function ListingDetailScreen({ navigation, route }) {
                   style={styles.sellerAvatar}
                 />
               ) : (
-                <Ionicons name="person" size={20} color={colors.muted} />
+                <View style={styles.sellerAvatarFallback}>
+                  <Text style={styles.sellerInitial}>
+                    {(seller.name || 'U').charAt(0).toUpperCase()}
+                  </Text>
+                </View>
               )}
             </View>
             <View style={styles.sellerInfo}>
               <View style={styles.sellerNameRow}>
                 <Text style={styles.sellerName} numberOfLines={1}>
-                  {seller.name}
+                  {seller.name || 'User'}
                 </Text>
                 {seller.is_verified ? (
                   <Ionicons
@@ -265,13 +293,13 @@ export default function ListingDetailScreen({ navigation, route }) {
                   />
                 ) : null}
               </View>
-              <Text style={styles.sellerRole}>Seller</Text>
+              <Text style={styles.sellerRole}>Member since 2026</Text>
             </View>
           </View>
         </View>
       </ScrollView>
 
-      {/* ---- Fixed action buttons ---- */}
+      {/* ---- Fixed action buttons at bottom ---- */}
       {!isOwnListing ? (
         <View style={styles.actions}>
           <TouchableOpacity
@@ -280,12 +308,10 @@ export default function ListingDetailScreen({ navigation, route }) {
             onPress={handleMessageSeller}
             disabled={processing}
           >
-            <Ionicons
-              name="chatbubble-outline"
-              size={18}
-              color={colors.accent}
-            />
-            <Text style={styles.secondaryButtonText}>Message Seller</Text>
+            <Ionicons name="chatbubble-ellipses" size={20} color={colors.accent} />
+            <Text style={styles.secondaryButtonText}>
+              Message
+            </Text>
           </TouchableOpacity>
 
           {canBuy ? (
@@ -298,189 +324,400 @@ export default function ListingDetailScreen({ navigation, route }) {
               {processing ? (
                 <ActivityIndicator size="small" color={colors.textInverse} />
               ) : (
-                <Text style={styles.primaryButtonText}>Buy Now</Text>
+                <Text style={styles.primaryButtonText}>
+                  Buy Now
+                </Text>
               )}
             </TouchableOpacity>
           ) : null}
         </View>
       ) : null}
+
+      {/* ---- Full Screen Image Preview Modal ---- */}
+      {images.length > 0 && (
+        <Modal
+          visible={previewVisible}
+          transparent={true}
+          animationType="fade"
+          onRequestClose={() => setPreviewVisible(false)}
+        >
+          <View style={styles.previewModalContainer}>
+            {/* Close button at top right */}
+            <TouchableOpacity
+              style={styles.previewCloseBtn}
+              onPress={() => setPreviewVisible(false)}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="close" size={26} color="#FFFFFF" />
+            </TouchableOpacity>
+
+            <FlatList
+              data={images}
+              horizontal
+              pagingEnabled
+              showsHorizontalScrollIndicator={false}
+              keyExtractor={(item) => String(item.id)}
+              initialScrollIndex={activeImage}
+              getItemLayout={(data, index) => ({
+                length: SCREEN_WIDTH,
+                offset: SCREEN_WIDTH * index,
+                index,
+              })}
+              onScroll={handleCarouselScroll}
+              scrollEventThrottle={16}
+              renderItem={({ item }) => (
+                <ScrollView
+                  maximumZoomScale={4}
+                  minimumZoomScale={1}
+                  showsHorizontalScrollIndicator={false}
+                  showsVerticalScrollIndicator={false}
+                  contentContainerStyle={styles.previewImageContainer}
+                >
+                  <Image
+                    source={{ uri: item.url }}
+                    style={styles.previewImage}
+                    resizeMode="contain"
+                  />
+                </ScrollView>
+              )}
+            />
+
+            {/* Preview bottom pagination count indicator */}
+            <View style={styles.previewPagination}>
+              <Text style={styles.previewPaginationText}>
+                {activeImage + 1} / {images.length}
+              </Text>
+            </View>
+          </View>
+        </Modal>
+      )}
     </View>
   );
 }
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: colors.background,
-  },
-  centered: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: colors.background,
-    padding: spacing.xl,
-  },
-  errorText: {
-    color: colors.danger,
-    fontSize: 15,
-    textAlign: 'center',
-  },
-  scrollContent: {
-    // Leave room so the fixed action bar never covers content.
-    paddingBottom: 96,
-  },
+const getStyles = (colors, spacing, radius, isDark) =>
+  StyleSheet.create({
+    container: {
+      flex: 1,
+      backgroundColor: colors.background,
+    },
+    centered: {
+      flex: 1,
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: colors.background,
+      padding: spacing.xl,
+    },
+    errorText: {
+      color: colors.danger,
+      fontSize: 15,
+      fontWeight: '600',
+      textAlign: 'center',
+    },
+    scrollContent: {
+      paddingBottom: Platform.OS === 'ios' ? 120 : 96,
+    },
 
-  // ---- Carousel ----
-  carousel: {
-    width: SCREEN_WIDTH,
-    height: SCREEN_WIDTH, // square hero area
-    backgroundColor: colors.skeleton,
-  },
-  carouselImage: {
-    width: SCREEN_WIDTH,
-    height: SCREEN_WIDTH,
-  },
-  placeholder: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  dots: {
-    position: 'absolute',
-    bottom: spacing.md,
-    left: 0,
-    right: 0,
-    flexDirection: 'row',
-    justifyContent: 'center',
-  },
-  dot: {
-    width: 7,
-    height: 7,
-    borderRadius: radius.pill,
-    marginHorizontal: 3,
-    backgroundColor: colors.overlay,
-  },
-  dotActive: {
-    backgroundColor: colors.accent,
-  },
+    // Carousel Image
+    carouselContainer: {
+      width: SCREEN_WIDTH,
+      height: SCREEN_WIDTH * 0.95,
+      backgroundColor: colors.surface,
+      position: 'relative',
+      borderBottomWidth: 1,
+      borderBottomColor: colors.border,
+    },
+    carouselImage: {
+      width: SCREEN_WIDTH,
+      height: SCREEN_WIDTH * 0.95,
+    },
+    placeholder: {
+      flex: 1,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    floatingHeader: {
+      position: 'absolute',
+      top: spacing.md,
+      right: spacing.md,
+      zIndex: 10,
+    },
+    floatingActionBtn: {
+      width: 42,
+      height: 42,
+      borderRadius: 21,
+      backgroundColor: isDark ? 'rgba(30, 30, 30, 0.9)' : 'rgba(255, 255, 255, 0.92)',
+      alignItems: 'center',
+      justifyContent: 'center',
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: 2 },
+      shadowOpacity: 0.12,
+      shadowRadius: 4,
+      elevation: 3,
+      borderWidth: 1,
+      borderColor: isDark ? 'rgba(255, 255, 255, 0.15)' : 'rgba(0, 0, 0, 0.08)',
+    },
+    dots: {
+      position: 'absolute',
+      bottom: spacing.md,
+      left: 0,
+      right: 0,
+      flexDirection: 'row',
+      justifyContent: 'center',
+    },
+    dot: {
+      width: 6,
+      height: 6,
+      borderRadius: 3,
+      marginHorizontal: 3,
+      backgroundColor: 'rgba(255, 255, 255, 0.4)',
+    },
+    dotActive: {
+      width: 14,
+      backgroundColor: colors.accent,
+    },
 
-  // ---- Body ----
-  body: {
-    padding: spacing.lg,
-  },
-  title: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: colors.text,
-    marginBottom: spacing.xs,
-  },
-  price: {
-    fontSize: 26,
-    fontWeight: '800',
-    color: colors.accent,
-    marginBottom: spacing.md,
-  },
-  metaRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    marginBottom: spacing.md,
-  },
-  metaItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginRight: spacing.lg,
-    marginBottom: spacing.xs,
-  },
-  metaText: {
-    fontSize: 14,
-    color: colors.textMuted,
-    marginLeft: spacing.xs,
-  },
-  description: {
-    fontSize: 15,
-    lineHeight: 22,
-    color: colors.text,
-    marginBottom: spacing.lg,
-  },
+    // Details Body
+    body: {
+      padding: spacing.lg,
+    },
+    pricingRow: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      marginBottom: spacing.xs,
+    },
+    price: {
+      fontSize: 28,
+      fontWeight: '950',
+      color: colors.accent,
+    },
+    statusBadge: {
+      paddingHorizontal: spacing.sm + 2,
+      paddingVertical: 3,
+      borderRadius: radius.sm,
+    },
+    statusActive: {
+      backgroundColor: isDark ? 'rgba(76, 175, 80, 0.15)' : 'rgba(46, 125, 50, 0.1)',
+    },
+    statusSold: {
+      backgroundColor: isDark ? 'rgba(244, 67, 54, 0.15)' : 'rgba(198, 40, 40, 0.1)',
+    },
+    statusBadgeText: {
+      fontSize: 12,
+      fontWeight: '700',
+      textTransform: 'uppercase',
+      color: colors.accent,
+    },
+    title: {
+      fontSize: 21,
+      fontWeight: '800',
+      color: colors.text,
+      marginBottom: spacing.md,
+      lineHeight: 28,
+    },
+    metaRow: {
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      marginBottom: spacing.sm,
+    },
+    badgeItem: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      backgroundColor: isDark ? '#2C1D15' : colors.accentSoft,
+      paddingHorizontal: spacing.md,
+      paddingVertical: spacing.sm - 2,
+      borderRadius: radius.pill,
+      marginRight: spacing.sm,
+      marginBottom: spacing.sm,
+      borderWidth: 1,
+      borderColor: isDark ? colors.border : 'transparent',
+    },
+    badgeText: {
+      color: colors.accent,
+      fontSize: 12,
+      fontWeight: '750',
+      textTransform: 'capitalize',
+      marginLeft: 4,
+    },
+    sectionDivider: {
+      height: 1,
+      backgroundColor: colors.divider,
+      marginVertical: spacing.lg,
+    },
+    sectionTitle: {
+      fontSize: 14,
+      fontWeight: '800',
+      color: colors.text,
+      marginBottom: spacing.sm,
+      textTransform: 'uppercase',
+      letterSpacing: 0.5,
+    },
+    description: {
+      fontSize: 15,
+      lineHeight: 24,
+      color: colors.textMuted,
+    },
 
-  // ---- Seller row ----
-  sellerRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingTop: spacing.lg,
-    borderTopWidth: 1,
-    borderTopColor: colors.divider,
-  },
-  sellerAvatarWrap: {
-    width: 44,
-    height: 44,
-    borderRadius: radius.pill,
-    backgroundColor: colors.skeleton,
-    alignItems: 'center',
-    justifyContent: 'center',
-    overflow: 'hidden',
-    marginRight: spacing.md,
-  },
-  sellerAvatar: {
-    width: '100%',
-    height: '100%',
-  },
-  sellerInfo: {
-    flex: 1,
-  },
-  sellerNameRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  sellerName: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: colors.text,
-    flexShrink: 1,
-  },
-  verifiedIcon: {
-    marginLeft: spacing.xs,
-  },
-  sellerRole: {
-    fontSize: 13,
-    color: colors.textMuted,
-    marginTop: 2,
-  },
+    // Seller Box
+    sellerCard: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      padding: spacing.md,
+      borderRadius: radius.md,
+      borderWidth: 1.5,
+      borderColor: colors.border,
+      backgroundColor: colors.surface,
+      marginTop: spacing.xs,
+    },
+    sellerAvatarWrap: {
+      width: 48,
+      height: 48,
+      borderRadius: 24,
+      backgroundColor: colors.skeleton,
+      alignItems: 'center',
+      justifyContent: 'center',
+      overflow: 'hidden',
+      marginRight: spacing.md,
+      borderWidth: 1,
+      borderColor: colors.border,
+    },
+    sellerAvatar: {
+      width: '100%',
+      height: '100%',
+    },
+    sellerAvatarFallback: {
+      flex: 1,
+      alignSelf: 'stretch',
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: colors.accentSoft,
+    },
+    sellerInitial: {
+      color: colors.accent,
+      fontSize: 18,
+      fontWeight: '700',
+    },
+    sellerInfo: {
+      flex: 1,
+    },
+    sellerNameRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+    },
+    sellerName: {
+      fontSize: 15,
+      fontWeight: '700',
+      color: colors.text,
+      flexShrink: 1,
+    },
+    verifiedIcon: {
+      marginLeft: spacing.xs,
+    },
+    sellerRole: {
+      fontSize: 12,
+      color: colors.textMuted,
+      marginTop: 2,
+      fontWeight: '500',
+    },
 
-  // ---- Action bar ----
-  actions: {
-    flexDirection: 'row',
-    padding: spacing.md,
-    borderTopWidth: 1,
-    borderTopColor: colors.border,
-    backgroundColor: colors.surface,
-  },
-  button: {
-    flex: 1,
-    height: 50,
-    borderRadius: radius.md,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginHorizontal: spacing.xs,
-  },
-  secondaryButton: {
-    borderWidth: 1.5,
-    borderColor: colors.accent,
-    backgroundColor: colors.surface,
-  },
-  secondaryButtonText: {
-    color: colors.accent,
-    fontSize: 15,
-    fontWeight: '600',
-    marginLeft: spacing.xs,
-  },
-  primaryButton: {
-    backgroundColor: colors.accent,
-  },
-  primaryButtonText: {
-    color: colors.textInverse,
-    fontSize: 15,
-    fontWeight: '700',
-  },
-});
+    // Fixed Bottom Action Bar
+    actions: {
+      flexDirection: 'row',
+      paddingHorizontal: spacing.md,
+      paddingTop: spacing.sm + 2,
+      paddingBottom: Platform.OS === 'ios' ? spacing.xl : spacing.md,
+      borderTopWidth: 1.5,
+      borderTopColor: colors.border,
+      backgroundColor: colors.surface,
+      position: 'absolute',
+      bottom: 0,
+      left: 0,
+      right: 0,
+      shadowColor: '#000000',
+      shadowOffset: { width: 0, height: -4 },
+      shadowOpacity: 0.05,
+      shadowRadius: 10,
+      elevation: 8,
+    },
+    button: {
+      flex: 1,
+      height: 50,
+      borderRadius: radius.md,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      marginHorizontal: spacing.xs,
+    },
+    secondaryButton: {
+      borderWidth: 1.5,
+      borderColor: colors.accent,
+      backgroundColor: colors.surface,
+    },
+    secondaryButtonText: {
+      color: colors.accent,
+      fontSize: 15,
+      fontWeight: '700',
+      marginLeft: spacing.sm,
+    },
+    primaryButton: {
+      backgroundColor: colors.accent,
+      shadowColor: colors.accent,
+      shadowOffset: { width: 0, height: 4 },
+      shadowOpacity: 0.2,
+      shadowRadius: 6,
+      elevation: 3,
+    },
+    primaryButtonText: {
+      color: colors.textInverse,
+      fontSize: 15,
+      fontWeight: '700',
+    },
+
+    // Image Preview Modal
+    previewModalContainer: {
+      flex: 1,
+      backgroundColor: '#000000',
+      justifyContent: 'center',
+    },
+    previewCloseBtn: {
+      position: 'absolute',
+      top: Platform.OS === 'ios' ? 60 : 30,
+      right: spacing.lg,
+      zIndex: 20,
+      width: 44,
+      height: 44,
+      borderRadius: 22,
+      backgroundColor: 'rgba(255, 255, 255, 0.15)',
+      alignItems: 'center',
+      justifyContent: 'center',
+      borderWidth: 1,
+      borderColor: 'rgba(255, 255, 255, 0.1)',
+    },
+    previewImageContainer: {
+      width: SCREEN_WIDTH,
+      height: '100%',
+      justifyContent: 'center',
+      alignItems: 'center',
+    },
+    previewImage: {
+      width: SCREEN_WIDTH,
+      height: '100%',
+    },
+    previewPagination: {
+      position: 'absolute',
+      bottom: Platform.OS === 'ios' ? 50 : 30,
+      alignSelf: 'center',
+      backgroundColor: 'rgba(0, 0, 0, 0.6)',
+      paddingHorizontal: spacing.lg,
+      paddingVertical: spacing.sm - 2,
+      borderRadius: radius.pill,
+      borderWidth: 1,
+      borderColor: 'rgba(255, 255, 255, 0.1)',
+    },
+    previewPaginationText: {
+      color: '#FFFFFF',
+      fontSize: 13,
+      fontWeight: '700',
+    },
+  });
